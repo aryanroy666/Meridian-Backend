@@ -38,10 +38,10 @@ class GeminiLLM(LLM):
         self.client = genai.Client(api_key=api_key)
 
         # Primary model (fast and inexpensive)
-        self.primary_model = "gemini-3.5-flash-lite"
+        self.primary_model = "gemini-3.5-flash"
 
         # Fallback model
-        self.fallback_model = "gemini-3.5-flash"
+        self.fallback_model = "gemini-2.5-flash-lite"
 
     # ---------------------------------------------------
     # Internal Chat Generator

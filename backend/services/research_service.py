@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 
 class ResearchService:
-
     def __init__(
         self,
         pipeline=None,
@@ -24,7 +23,6 @@ class ResearchService:
         validation_repository=None,
         report_repository=None,
     ):
-
         self.pipeline = pipeline or ResearchPipeline()
 
         self.planner_task_repository = (
@@ -47,6 +45,10 @@ class ResearchService:
             report_repository or ReportRepository()
         )
 
+    # ==========================================================
+    # Run Complete Research Pipeline
+    # ==========================================================
+
     def run_research(
         self,
         query: str,
@@ -55,46 +57,65 @@ class ResearchService:
 
         start_time = time.time()
 
-        # ----------------------------------------------------
-        # Validate Query
-        # ----------------------------------------------------
+        # ------------------------------------------------------
+        # Validate Input
+        # ------------------------------------------------------
+
         if not query or not query.strip():
             raise ValueError("Research query cannot be empty.")
 
+        query = query.strip()
+
         logger.info("=" * 60)
-        logger.info(f"Starting research job: {job_id}")
-        logger.info(f"Research query: {query}")
+        logger.info("Starting research job: %s", job_id)
+        logger.info("Research query: %s", query)
         logger.info("=" * 60)
 
-        # ----------------------------------------------------
-        # Run AI Pipeline
-        # ----------------------------------------------------
+        # ------------------------------------------------------
+        # Execute AI Pipeline
+        # ------------------------------------------------------
+
         try:
-            result = self.pipeline.run(query.strip())
+            result = self.pipeline.run(query)
 
+        # Gemini unavailable after retries
         except RuntimeError as e:
+
+            elapsed = time.time() - start_time
+
             logger.error(
-                f"Research job {job_id} failed after "
-                f"{time.time() - start_time:.2f}s."
+                "Research job %s failed after %.2fs.",
+                job_id,
+                elapsed,
             )
+
+            logger.error("Gemini is temporarily unavailable.")
             logger.error(str(e))
 
-            # Pass clean message back to API layer.
+            # Return a clean error to the API layer.
             raise RuntimeError(
                 "Gemini is temporarily unavailable after multiple retries. Please retry in a few minutes."
             ) from e
 
+        # Any unexpected pipeline failure
         except Exception as e:
+
+            elapsed = time.time() - start_time
+
             logger.exception(
-                f"Unexpected pipeline error for research job {job_id}."
+                "Unexpected pipeline error for research job %s after %.2fs.",
+                job_id,
+                elapsed,
             )
+
             raise RuntimeError(
                 f"Research pipeline failed: {str(e)}"
             ) from e
 
-        # ----------------------------------------------------
+        # ------------------------------------------------------
         # Save Planner Tasks
-        # ----------------------------------------------------
+        # ------------------------------------------------------
+
         task_count = 0
 
         for task in result.tasks:
@@ -105,11 +126,12 @@ class ResearchService:
             )
             task_count += 1
 
-        logger.info(f"Saved {task_count} planner tasks.")
+        logger.info("Saved %s planner tasks.", task_count)
 
-        # ----------------------------------------------------
+        # ------------------------------------------------------
         # Save Sources
-        # ----------------------------------------------------
+        # ------------------------------------------------------
+
         source_map = {}
 
         for source in result.sources:
@@ -121,11 +143,12 @@ class ResearchService:
 
             source_map[source.source_id] = db_source
 
-        logger.info(f"Saved {len(source_map)} sources.")
+        logger.info("Saved %s sources.", len(source_map))
 
-        # ----------------------------------------------------
+        # ------------------------------------------------------
         # Save Evidence
-        # ----------------------------------------------------
+        # ------------------------------------------------------
+
         evidence_map = {}
 
         for evidence in result.evidences:
@@ -134,7 +157,8 @@ class ResearchService:
 
             if not db_source:
                 logger.warning(
-                    f"Skipping evidence {evidence.evidence_id}: source not found."
+                    "Skipping evidence %s because source was not found.",
+                    evidence.evidence_id,
                 )
                 continue
 
@@ -148,11 +172,12 @@ class ResearchService:
 
             evidence_map[evidence.evidence_id] = db_evidence
 
-        logger.info(f"Saved {len(evidence_map)} evidence items.")
+        logger.info("Saved %s evidence items.", len(evidence_map))
 
-        # ----------------------------------------------------
+        # ------------------------------------------------------
         # Save Validation Results
-        # ----------------------------------------------------
+        # ------------------------------------------------------
+
         validation_count = 0
 
         for validation in result.validations:
@@ -161,7 +186,8 @@ class ResearchService:
 
             if not db_evidence:
                 logger.warning(
-                    f"Skipping validation for {validation.evidence_id}: evidence not found."
+                    "Skipping validation for %s because evidence was not found.",
+                    validation.evidence_id,
                 )
                 continue
 
@@ -177,11 +203,12 @@ class ResearchService:
 
             validation_count += 1
 
-        logger.info(f"Saved {validation_count} validations.")
+        logger.info("Saved %s validation results.", validation_count)
 
-        # ----------------------------------------------------
+        # ------------------------------------------------------
         # Save Final Report
-        # ----------------------------------------------------
+        # ------------------------------------------------------
+
         report_data = result.report.model_dump()
 
         self.report_repository.create_report(
@@ -191,9 +218,19 @@ class ResearchService:
 
         logger.info("Saved research report.")
 
-        logger.info(
-            f"Research job {job_id} completed successfully in "
-            f"{time.time() - start_time:.2f}s."
-        )
+        # ------------------------------------------------------
+        # Success Summary
+        # ------------------------------------------------------
+
+        elapsed = time.time() - start_time
+
+        logger.info("=" * 60)
+        logger.info("Research job %s completed successfully.", job_id)
+        logger.info("Tasks: %s", len(result.tasks))
+        logger.info("Sources: %s", len(result.sources))
+        logger.info("Evidence: %s", len(result.evidences))
+        logger.info("Validations: %s", len(result.validations))
+        logger.info("Completed in %.2f seconds.", elapsed)
+        logger.info("=" * 60)
 
         return result

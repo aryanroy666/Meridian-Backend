@@ -1,4 +1,5 @@
 import json
+import logging
 
 from ai.llm.gemini import GeminiLLM
 from ai.schemas.evidence import Evidence
@@ -6,22 +7,33 @@ from ai.schemas.validation import ValidationResult
 from ai.schemas.research_task import ResearchTask
 from ai.schemas.report import Report
 
+logger = logging.getLogger(__name__)
+
+# Maximum evidence items sent to Gemini
+MAX_REPORT_EVIDENCE = 15
+
 
 class ReportAgent:
 
     def __init__(self, llm=None):
         self.llm = llm or GeminiLLM()
 
+    # -------------------------------------------------------
+    # Generate Final Research Report
+    # -------------------------------------------------------
+
     def generate_report(
         self,
         tasks: list[ResearchTask],
         evidences: list[Evidence],
         validations: list[ValidationResult],
-        citations
+        citations,
     ) -> Report:
 
         if not evidences:
-            raise ValueError("No evidence available for report generation")
+            raise ValueError(
+                "No evidence available for report generation."
+            )
 
         validation_map = {
             validation.evidence_id: validation
@@ -30,6 +42,7 @@ class ReportAgent:
 
         report_evidence = []
 
+        # Keep only validated evidence and trim fields
         for evidence in evidences:
 
             validation = validation_map.get(evidence.evidence_id)
@@ -42,149 +55,147 @@ class ReportAgent:
                     "evidence_id": evidence.evidence_id,
                     "claim": evidence.claim,
                     "excerpt": evidence.excerpt,
-                    "entity": evidence.entity,
-                    "topic": evidence.topic,
-                    "relevance_score": evidence.relevance_score,
-                    "source_id": evidence.source_id,
-                    "validation": {
-                        "credibility_score": (
-                            validation.credibility_score
-                            if validation else None
-                        ),
-                        "recency_score": (
-                            validation.recency_score
-                            if validation else None
-                        ),
-                        "is_duplicate": (
-                            validation.is_duplicate
-                            if validation else None
-                        ),
-                        "has_conflict": (
-                            validation.has_conflict
-                            if validation else None
-                        ),
-                    }
+                    "source_title": evidence.source_id,
+                    "credibility_score": (
+                        validation.credibility_score
+                        if validation
+                        else evidence.relevance_score
+                    ),
+                    "recency_score": (
+                        validation.recency_score
+                        if validation
+                        else 0.5
+                    ),
                 }
             )
 
         if not report_evidence:
-            raise ValueError("No valid evidence available for report generation")
+            raise ValueError(
+                "No validated evidence available for report generation."
+            )
+
+        # Sort by credibility and keep only top evidence
+        report_evidence.sort(
+            key=lambda x: (
+                x["credibility_score"],
+                x["recency_score"],
+            ),
+            reverse=True,
+        )
+
+        report_evidence = report_evidence[:MAX_REPORT_EVIDENCE]
+
+        logger.info(
+            f"Generating report using {len(report_evidence)} evidence items."
+        )
 
         prompt = f"""
-You are a senior strategy research analyst.
+You are a senior McKinsey strategy research analyst.
 
-Create a professional research report based ONLY on the provided
-research task and validated evidence.
+Create a professional research report using ONLY the supplied research tasks and validated evidence.
 
-RESEARCH TASK:
-
-{json.dumps(
-    [task.model_dump() for task in tasks],
-    indent=2
-)}
+RESEARCH TASKS:
+{json.dumps([task.model_dump() for task in tasks], indent=2)}
 
 VALIDATED EVIDENCE:
-
 {json.dumps(report_evidence, indent=2)}
 
-Your report must contain:
+Return ONLY valid JSON.
 
-1. title
-2. executive_summary
-3. key_findings
-4. market_signals
-5. competitor_observations
-6. implications
-7. recommendations
-8. evidence_appendix
-
-IMPORTANT RULES:
-
-- Use ONLY the provided evidence.
-- Do not invent facts.
-- Do not use outside knowledge.
-- Do not create statistics that are not present in the evidence.
-- Do not treat unsupported assumptions as facts.
-- Recommendations must logically follow from the findings.
-- Keep the executive summary concise.
-- Key findings should contain the most important facts.
-- Market signals should describe important trends visible in the evidence.
-- Competitor observations should only be included when supported by the evidence.
-- Implications should explain why the findings matter.
-- Recommendations should be practical and connected to the evidence.
-- Evidence appendix should reference the evidence IDs used.
-- Return ONLY valid JSON.
-- Do not return Markdown.
-- Do not return ```json.
-- Do not include explanations outside the JSON.
-
-Return exactly this structure:
+Required structure:
 
 {{
-    "title": "Research report title",
-    "executive_summary": "Concise summary of the research.",
-    "key_findings": [
-        {{
-            "text": "Finding 1",
-            "evidence_ids": ["evidence_001"]
-        }},
-        {{
-            "text": "Finding 2",
-            "evidence_ids": ["evidence_002"]
-        }}
-    ],
-    "market_signals": [
-        {{
-            "text": "Market signal 1",
-            "evidence_ids": ["evidence_003"]
-        }}
-    ],
-    "competitor_observations": [
-        {{
-            "text": "Competitor observation 1",
-            "evidence_ids": ["evidence_004"]
-        }}
-    ],
-    "implications": [
-        {{
-            "text": "Strategic implication 1",
-            "evidence_ids": ["evidence_001"]
-        }}
-    ],
-    "recommendations": [
-        {{
-            "text": "Recommendation 1",
-            "evidence_ids": ["evidence_001"]
-        }}
-    ],
-    "evidence_appendix": [
-        "evidence_001",
-        "evidence_002"
-    ]
+  "title":"Research report title",
+  "executive_summary":"Concise executive summary.",
+  "key_findings":[
+    {{
+      "text":"Finding",
+      "evidence_ids":["evidence_001"]
+    }}
+  ],
+  "market_signals":[
+    {{
+      "text":"Market signal",
+      "evidence_ids":["evidence_001"]
+    }}
+  ],
+  "competitor_observations":[
+    {{
+      "text":"Observation",
+      "evidence_ids":["evidence_001"]
+    }}
+  ],
+  "implications":[
+    {{
+      "text":"Implication",
+      "evidence_ids":["evidence_001"]
+    }}
+  ],
+  "recommendations":[
+    {{
+      "text":"Recommendation",
+      "evidence_ids":["evidence_001"]
+    }}
+  ],
+  "evidence_appendix":[
+    "evidence_001"
+  ]
 }}
+
+Rules:
+- Use only supplied evidence.
+- Do not invent statistics or facts.
+- Every finding/recommendation must reference evidence_ids.
+- Return JSON only.
 """
 
         response = self.llm.generate(prompt)
 
+        cleaned_response = self._clean_response(response)
+
         try:
-
-            response = response.strip()
-
-            if response.startswith("```"):
-                response = response.replace("```json", "")
-                response = response.replace("```", "")
-                response = response.strip()
-
-            data = json.loads(response)
+            data = json.loads(cleaned_response)
 
             report = Report.model_validate(data)
 
             report.citations = citations
 
+            logger.info("Research report generated successfully.")
+
             return report
 
         except Exception as e:
+            logger.error("Invalid report returned by Gemini.")
+            logger.error(cleaned_response)
 
             raise ValueError(
-                "Report agent returned invalid report"
+                "Report agent returned invalid report."
             ) from e
+
+    # -------------------------------------------------------
+    # Clean Gemini Response
+    # -------------------------------------------------------
+
+    @staticmethod
+    def _clean_response(response: str) -> str:
+
+        cleaned = response.strip()
+
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+
+            cleaned = "\n".join(lines).strip()
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+
+        if start != -1 and end != -1:
+            cleaned = cleaned[start:end + 1]
+
+        return cleaned

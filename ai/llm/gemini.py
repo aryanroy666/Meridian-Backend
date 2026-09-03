@@ -53,10 +53,10 @@ class GeminiLLM(LLM):
         # Model Configuration (Best → Weakest)
         # -------------------------------------------------------
 
-        self.primary_model = "gemini-3.5-flash"
+        self.primary_model = "gemini-3.1-flash-lite"
 
         self.fallback_models = [
-            "gemini-2.5-flash",
+            "gemini-3.5-flash",
             "gemini-2.5-flash-lite",
         ]
 
